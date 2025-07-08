@@ -1,5 +1,5 @@
 ---
-title: "Simulation5.1_GBM"
+title: "Simulation_GBM"
 author: "Maja Gledić"
 date: "2025-06-28"
 output: pdf_document
