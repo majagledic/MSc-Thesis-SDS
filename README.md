@@ -36,10 +36,10 @@ The goal is to identify which estimation strategy yields the most accurate and r
 
 | File | Description |
 |------|-------------|
-| `Simulation_LR.Rmd` | Simulation using **Logistic Regression** as the nuisance model |
-| `Simulation_GAM.Rmd` | Simulation using **GAM** as the nuisance model |
-| `Simulation_RF.Rmd` | Simulation using **Random Forest** as the nuisance model |
-| `Simulation_GBM.Rmd` | Simulation using **Gradient Boosting** as the nuisance model |
+| `Simulation_LR.Rmd` | **Logistic Regression** nuisance model |
+| `Simulation_GAM.Rmd` | **Generalized Additive** nuisance model |
+| `Simulation_RF.Rmd` | **Random Forest** nuisance model |
+| `Simulation_GBM.Rmd` | **Gradient Boosting** nuisance model |
 
 Each `.Rmd` file runs an independent simulation study, evaluates counterfactual Brier scores, and produces summary plots and tables.
 
