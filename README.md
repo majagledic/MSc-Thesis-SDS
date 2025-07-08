@@ -2,11 +2,11 @@
 Code for Master's Thesis Statistics and Data Science: 
 "Performance Evaluation of Interventional Prediction Models using Cross-validation"
 
-# Counterfactual Performance Evaluation Using Different Nuisance Models
+## Counterfactual Performance Evaluation Using Different Nuisance Models
 This repository contains the code and simulations for analyzing the impact of different nuisance model estimation strategies on counterfactual performance evaluation in a cross-validation setting. Treatment assignment was modeled using **Inverse Probability Weighting (IPW)**, and performance was evaluated using the **Brier score**.
 
 -------------------
-## Project Overview
+### Project Overview
 
 This simulation-based project explores how different nuisance model estimation strategies influence counterfactual performance evaluation in a cross-validation setting. The focus is on the **estimation of the Brier score** under various sample sizes and model flexibility to assess **bias**, **variance**, and **RMSE** of the estimates.
 
@@ -32,7 +32,7 @@ Each combination of strategy, sample size, and model complexity was evaluated in
 The goal is to identify which estimation strategy yields the most accurate and reliable counterfactual performance estimates under realistic modeling conditions.
 
 -----------------------
-## Repository Structure
+### Repository Structure
 
 | File | Description |
 |------|-------------|
@@ -44,7 +44,7 @@ The goal is to identify which estimation strategy yields the most accurate and r
 Each `.Rmd` file runs an independent simulation study, evaluates counterfactual Brier scores, and produces summary plots and tables.
 
 ---------------
-## Requirements
+### Requirements
 
 - R (version ≥ 4.0.0 recommended)
 - All necessary packages are loaded at the beginning of each `.Rmd` file
@@ -55,7 +55,7 @@ Commonly used packages include:
 - `knitr`, `rmarkdown`
 
 -------------------
-## Running the Code
+### Running the Code
 
 To run any of the simulation scripts:
   1. Open the desired `.Rmd` file in RStudio.
@@ -67,7 +67,7 @@ To run any of the simulation scripts:
  depending on your system specifications.
 
 ---------
-## Output
+### Output
 
 Each script produces:
 - Plots showing the distribution of estimated Brier scores and average Brier scores from 100 simulation replication across varying samples
@@ -76,8 +76,3 @@ Each script produces:
   - **Bias**, **variance**, and **RMSE** of the Brier score estimates
 
 These outputs allow for comparison of model robustness and performance under varying data conditions.
-
-----------
-## License
-
-This project is shared for academic and educational purposes.
