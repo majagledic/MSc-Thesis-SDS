@@ -29,7 +29,7 @@ Each combination of strategy, sample size, and model complexity was evaluated in
 - **Variance**: across repetitions
 - **RMSE**: overall error metric
 
-The goal is to identify which estimation strategy yields the most accurate and reliable counterfactual performance estimates under realistic modeling conditions.
+The goal is to identify which estimation strategy yields the most accurate and reliable counterfactual performance estimates under various modeling conditions.
 
 -----------------------
 ### Repository Structure
