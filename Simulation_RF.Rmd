@@ -308,7 +308,7 @@ cv_manual <- function(n, r, k_folds = 5) {
 ## Replications and Sample Sizes
 ```{r replicate simulation}
 n_reps <- 100
-sample_sizes <- c(500)
+sample_sizes <- c(500, 1000, 1e4, 1e5)
 
 for (n in sample_sizes) {
   
