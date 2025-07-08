@@ -1,0 +1,718 @@
+---
+title: "Simulation5.1_GAM"
+author: "Maja Gledić"
+date: "2025-06-28"
+output: pdf_document
+---
+
+This is the code for performing the cross-validation where the nuisance-models 
+are defined as a generalized additive propensity score models.
+Therefore, the cross-validation procedure is the same as for the baseline model, 
+with the only difference being the type of nuisance models. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# list of required packages
+packages_needed <- c("dplyr", "ggplot2", "pbapply", "mgcv")
+
+# install any missing packages and load libraries
+for (pkg in packages_needed) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
+  } else {
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+
+# Generate Data
+```{r data generation function}
+# create function that generates data
+sim_data <- function(n, seed) {
+  set.seed(seed)
+  
+  x1 <- rnorm(n, mean = 0, sd = 1)                      
+  x2 <- 0.6*x1 + rnorm(n, mean = 0, sd = 0.5)           
+  x3 <- rbinom(n, 1, 0.5)                               
+  x4 <- sample(1:3, n, replace = TRUE)                  
+  x5 <- 0.4*x1 + 0.3*x2 + rnorm(n, mean = 0, sd = 0.5)  
+  x6 <- 0.5*x5 - 0.2*x3 + rnorm(n, mean = 0, sd = 0.5) 
+  
+  # probability of treatment assignment based on all observed confounders
+  # positivity assumption
+  prob_a <- plogis(-0.175 + 0.1*x1 + 0.3*x2 + 0.2*x3 - 0.01*(x4 == 2) + 0.02*x5 - 0.3*x6)
+  a <- rbinom(n, 1, prob_a)   # (1 = treated, 0 = untreated)
+  
+    
+  # create relationship between observed confounders and conterfactual outcomes
+  # these denote the potential outcomes for each individual 
+  # under both treatment conditions
+  # homogenous treatment assignment where covariate effect is the same
+  # only difference is treatment effect (last term)
+  y_a1 <- rbinom(n, 1, plogis(-1.2 + 0.005*x1 + 0.003*x2^2 + 0.004*x5 - 0.002*x6 + 0.002*x3^3 - 0.004*(x4 == 3) + 0.0025*1))  # treated
+  y_a0 <- rbinom(n, 1, plogis(-1.2 + 0.005*x1 + 0.003*x2^2 + 0.004*x5 - 0.002*x6 + 0.002*x3^3 - 0.004*(x4 == 3) + 0.0025*0))  # untreated
+  
+  # observed outcome based on actual treatment
+  # consistency assumption
+  y_obs <- ifelse(a == 1, y_a1, y_a0)
+  
+  df <- data.frame(X1 = x1, X2 = x2, X3 = as.factor(x3), 
+                   X4 = as.factor(x4), X5 = x5, X6 = x6, 
+                   A = as.factor(a), 
+                   Y_a0 = as.factor(y_a0),
+                   Y_a1 = as.factor(y_a1),
+                   Y_obs = as.factor(y_obs))
+  
+  return(df)
+}
+```
+
+# Cross-validation Procedure
+```{r cross-validation procedure, warning=FALSE}
+
+# create function to run 5-fold cross-validation
+# define the function to run 'r' replications for a given sample size 'n',
+# with 'k' number of folds
+
+
+cv_manual <- function(n, r, k_folds = 5) {
+  
+  # run simulated data
+  df <- sim_data(n, seed = 123 + r)
+  # partition data into 5 folds
+  folds <- cut(sample(nrow(df)), breaks = k_folds, labels = FALSE)
+      
+  # initialise storage of Brier scores across 5 folds
+  true_brier_A0 <- numeric(k_folds)
+  true_brier_A1 <- numeric(k_folds)
+  est_brier1_A0 <- numeric(k_folds)
+  est_brier1_A1 <- numeric(k_folds)
+  est_brier2_A0 <- numeric(k_folds)
+  est_brier2_A1 <- numeric(k_folds)
+  est_brier3_A0 <- numeric(k_folds)
+  est_brier3_A1 <- numeric(k_folds)
+  est_brier4_A0 <- numeric(k_folds)
+  est_brier4_A1 <- numeric(k_folds)
+                  
+# for loop for cross-validation
+  for (i in 1:k_folds){
+
+    # ----------------
+    # PREDICTION MODEL
+    # ----------------
+    
+    # assign train and validation sets such that the split is 80/20
+    train <- df[folds != i, ]
+    test <- df[folds == i, ]
+    
+    # NUISANCE MODEL 1: generalized additive propensity score model
+    # develop propensity score model from train data and determine weights
+    ps_null <- gam(A ~ s(X1) + s(X2) + X3 + X4 + s(X5)+ s(X6), 
+               data = train, family = "binomial")
+    # estimate propensity scores for the training set
+    train$ps_null <- predict(ps_null, type = "response")
+    # get inverse probability weights for the training set
+    train$weights_null <- ifelse(train$A == 1, 1/train$ps_null, 1/(1-train$ps_null))   
+    
+    # create weighted prediction model by including the training set weights
+    # define prediction model as logistic regression model
+    model_null <- glm(Y_obs ~ A + X1 + X2 + X3 + X4 + X5 + X6, data = train, 
+                      family = "binomial", weights = train$weights_null)
+    
+    # the test set will be used for making predictions
+    # need to create scenarios so that for all observations A={0,1}
+    # create two test sets and make A={0,1} for all
+    test_A0 <- test
+    test_A0$A <- as.factor(0)
+    test_A1 <- test 
+    test_A1$A <- as.factor(1)
+    
+    # get predictions from test sets (a=0, a=1) and attach to original test set
+    # each individual should have two predictions (predicted counterfactual outcomes)
+    test$predsA0 <- predict(model_null, newdata = test_A0, type = "response")  
+    test$predsA1 <- predict(model_null, newdata = test_A1, type = "response") 
+    
+    # ----------------
+    # TRUE BRIER SCORE
+    # ----------------
+    
+    # extract true counterfactuals from test set based on treatment assignment
+    test_Y_a0 <- as.numeric(test$Y_a0) - 1
+    test_Y_a1 <- as.numeric(test$Y_a1) - 1
+    
+
+    # evaluate performance for each iteration:
+    # compare simulated counterfactuals with prediction probabilities
+    # this is the estimated benchmark for counterfactual performance 
+
+    true_brier_A0[i] <- mean((test_Y_a0 - test$predsA0)^2)   
+    true_brier_A1[i] <- mean((test_Y_a1 - test$predsA1)^2)
+    
+    # ---------------------
+    # ESTIMATED BRIER SCORE
+    # ---------------------
+    
+    # this is the estimated counterfactual Brier score 
+    # this involves implementing the four strategies 
+    # for estimating NUISANCE MODEL 2 
+
+    # extract observed outcomes - we use these for computing the Brier score
+    test$Y_obs <- as.numeric(test$Y_obs) - 1
+
+    # --------------------------------------------------
+    # STRATEGY 1: develop nuisance model using FULL DATA
+    # --------------------------------------------------
+    
+    # STEP 1: train propensity score model using full data
+    ps_model1 <- gam(A ~ s(X1) + s(X2) + X3 + X4 + s(X5)+ s(X6), 
+                 data = df, family = "binomial")  
+    # STEP 2: estimate propensity scores for the validation set
+    test$ps1 <- predict(ps_model1, newdata = test, type = "response")  
+    # STEP 3: get weights for the validation set 
+    test$weights1 <- ifelse(test$A == 1, 1 / test$ps1, 1 / (1 - test$ps1))        
+    
+    # STEP 4: compute estimated Brier scores for each iteration:
+    # using observed outcomes, predicted probabilities from prediction model,
+    # and weights from nuisance model 2
+    est_brier1_A0[i] <- mean(test$weights1 * (test$A==0) * (test$Y_obs - test$predsA0)^2) 
+    est_brier1_A1[i] <- mean(test$weights1 * (test$A==1) * (test$Y_obs - test$predsA1)^2)
+  
+    # -----------------------------------------------------
+    # STRATEGY 2: develop nuisance model using TRAINING SET
+    # -----------------------------------------------------
+    
+    # STEP 1: train propensity score using training set
+    # Repeat steps 2-4 
+
+    ps_model2 <- gam(A ~ s(X1) + s(X2) + X3 + X4 + s(X5)+ s(X6), 
+                  data = train, family = "binomial")  
+    test$ps2 <- predict(ps_model2, newdata = test, type = "response")  
+    test$weights2 <- ifelse(test$A == 1, 1 / test$ps2, 1 / (1 - test$ps2))
+    
+    est_brier2_A0[i] <- mean(test$weights2 * (test$A==0)* (test$Y_obs - test$predsA0)^2)
+    est_brier2_A1[i] <- mean(test$weights2 * (test$A==1)* (test$Y_obs - test$predsA1)^2) 
+    
+    # ---------------------------------------------------------
+    # STRATEGY 3: develop nuisance model using validation data
+    # ---------------------------------------------------------
+    
+    # STEP 1: train propensity score using test set
+    # Repeat steps 2-4 
+    ps_model3 <- gam(A ~ s(X1) + s(X2) + X3 + X4 + s(X5)+ s(X6), 
+               data = test, family = "binomial") 
+    test$ps3 <- predict(ps_model3, newdata = test, type = "response") 
+    test$weights3 <- ifelse(test$A == 1, 1 / test$ps3, 1 / (1 - test$ps3))
+    
+    est_brier3_A0[i] <- mean(test$weights3 * (test$A==0) * (test$Y_obs - test$predsA0)^2) 
+    est_brier3_A1[i] <- mean(test$weights3 * (test$A==1) * (test$Y_obs - test$predsA1)^2)
+  
+    # -------------------------------------------------------
+    # STRATEGY 4: develop nuisance model using "nuisance" set
+    # -------------------------------------------------------
+  
+    # STEP 1: split test into 2 parts - nuisance and remainder of test set
+    # we partition the test set such that it is a 50/50 split
+    # we split the test set instead of the training set to keep the data
+    # used for the prediction model (prediction probabilities) the same
+    idx <- sample(nrow(test), size = round(0.5*nrow(test)), replace = FALSE) 
+    nuisance <- test[idx,]
+    remaining <- test[-idx,]
+    
+    # STEP 2: train the propensity score using the nuisance set
+    ps_model4 <- gam(A ~ s(X1, k=4) + s(X2, k=4) + X3 + X4 + s(X5, k=4)+ s(X6, k=4), 
+               data = nuisance, family = "binomial") 
+    
+    # STEP 3: estimate propensity scores on the remaining validation set
+    remaining$ps4 <- predict(ps_model4, newdata = remaining, type = "response") 
+    # STEP 4: get weights for remaining test (validation) set
+    remaining$weights4 <- ifelse(remaining$A == 1, 1 / remaining$ps4, 1 / (1 - remaining$ps4))
+
+    # STEP 5: estimate Brier scores accordingly
+    est_brier4_A0[i] <- mean(remaining$weights4 * (remaining$A==0) * (remaining$Y_obs - remaining$predsA0)^2)
+    est_brier4_A1[i] <- mean(remaining$weights4 * (remaining$A==1) * (remaining$Y_obs - remaining$predsA1)^2)
+  }
+  
+  # average the Brier scores across the 5-folds
+  data.frame(replication = r,
+            sample_size = n,  
+            True_A0 = mean(true_brier_A0),
+            True_A1 = mean(true_brier_A1),
+            Est1_A0 = mean(est_brier1_A0),
+            Est1_A1 = mean(est_brier1_A1),
+            Est2_A0 = mean(est_brier2_A0),
+            Est2_A1 = mean(est_brier2_A1),
+            Est3_A0 = mean(est_brier3_A0),
+            Est3_A1 = mean(est_brier3_A1),
+            Est4_A0 = mean(est_brier4_A0),
+            Est4_A1 = mean(est_brier4_A1))
+
+}
+```
+
+```{r analysis checks}
+  
+# check propensity scores and weights
+
+# mean(test$ps1)
+# mean(test$ps2)
+# mean(test$ps3)
+# mean(as.numeric(test$A)-1)
+# mean(remaining$ps4)
+# mean(as.numeric(remaining$A)-1)
+# 
+# # distribution of propensity scores
+# ggplot(data = remaining, mapping = aes(x = ps4, fill = A)) +
+#   geom_histogram(bins = 10)
+# 
+# ggplot(data = test, mapping = aes(x = ps1, fill = A)) +
+#   geom_histogram(bins = 10)
+# 
+# # distribution of weights
+# summary(test$weights3)
+# summary(remaining$weights4)
+
+```
+
+
+## Replications and Sample Sizes
+```{r replicate simulation, warning=FALSE}
+
+# set number of simulation replications
+n_reps <- 100
+# set various sample sizes
+sample_sizes <- c(500, 1000, 1e4, 1e5)
+
+# for loop for running cross-validation for each sample size "n_rep" times
+for (n in sample_sizes) {
+  
+  # run cross-validation for all replications per sample size
+  results_cv_list <- pblapply(1:n_reps, function(r) {
+    suppressMessages(cv_manual(n = n, r = r))
+  })
+  
+  # combine results from each replication 
+  results_cv_gam <- do.call(rbind, results_cv_list)
+  # save results from each sample size as .rda file
+  save(results_cv_gam, file = paste0("results_GAM_", n, ".rda"))
+  
+  message("Finished and saved: Sample Size = ", n)
+}
+
+```
+
+## Loading the saved data files
+```{r load saved files}
+
+sample_sizes <- c(500, 1000, 1e4, 1e5)
+# load the files for each sample size
+loaded_results <- lapply(sample_sizes, function(n) {
+  
+  file_name <- paste0("results_GAM_", n, ".rda")
+  data <- get(load(file_name))
+  return(data)
+})
+
+# removed Brier scores above 5 (should actually be between 0 and 1)
+# this removed 8 rows
+loaded_results[[1]] <- loaded_results[[1]] %>% filter(Est4_A1 <= 5)
+
+combined_results_gam <- do.call(rbind, loaded_results)
+
+```
+
+
+# Summary
+## Untreated Group
+
+### Distribution of Brier scores
+```{r distribution of Brier scores}
+# subset such that we only have for a=0 
+# transform into long formatlong_df0_gam <- combined_results_gam %>%
+  dplyr::select(replication, sample_size, True_A0, Est1_A0, Est2_A0, Est3_A0, Est4_A0) %>%
+  tidyr::pivot_longer(cols = starts_with("True_A0"):starts_with("Est4_A0"), 
+               names_to = "strategy", values_to = "brier_score")
+
+# rename to display strategy names
+long_df0_gam <- long_df0_gam %>% mutate(strategy = recode(strategy,
+                           "True_A0" = "True",
+                           "Est1_A0" = "Full_Data",
+                           "Est2_A0" = "Training_Set",
+                           "Est3_A0" = "Test_Set",
+                           "Est4_A0" = "Nuisance_Set")) %>%
+            mutate(strategy = factor(strategy, 
+                           levels = c("True","Full_Data", 
+                                      "Training_Set", "Test_Set", 
+                                      "Nuisance_Set")))
+
+#-------------------------------------------------------------------------------
+
+# Boxplot: distribution of Brier score estimates from 100 replications
+boxplot0_gam <- ggplot(long_df0_gam, 
+                      aes(x = strategy, y = brier_score, 
+                          fill = strategy, color = strategy)) +
+  
+  geom_jitter(alpha = 0.5) +
+  geom_boxplot(alpha = 0.7, color = "black") +
+  
+  labs(# title = "Distribution of Brier Scores (A=0)",
+       # subtitle = "Logistic Regression Nuisance Model", 
+       # caption = "Average estimates from 1000 replications",
+       y = "Average Brier Score", x = "") +
+  
+  scale_color_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED"), 
+                     name = "Strategy") +
+  
+  scale_fill_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED"), 
+                    name = "Strategy") +
+
+  theme_minimal() +
+  
+  theme(axis.text.x = element_blank()) +
+  
+  facet_wrap(~sample_size) +
+  
+  scale_y_continuous(limits = c(0.14, 0.26)) 
+
+
+# ggsave("boxplot0_gam.png", plot = boxplot0_gam)
+```
+
+
+### Average Brier scores 
+```{r average Brier scores}
+# subset Brier scores such that we only have for a=0
+results_A0 <- combined_results_gam %>% dplyr::select(replication, sample_size, 
+                                 True_A0, Est1_A0, Est2_A0, Est3_A0, Est4_A0)
+
+# compute the mean and standard deviations for each score
+# across the simulation runs
+summary_stats_A0 <- results_A0 %>%
+  group_by(sample_size) %>%
+  summarise(across(.cols = c(True_A0, Est1_A0, Est2_A0, Est3_A0, Est4_A0),
+                   .fns = list(mean_brier = mean, sd_brier = sd),
+                   .names = "{.col}_{.fn}"))
+
+
+# transform the dataframe to separate values based on strategies 
+summary_A0 <- summary_stats_A0 %>%
+  tidyr::pivot_longer(
+    cols = -sample_size, 
+    names_to = c("strategy", "metric"), 
+    names_sep = "_A0_") %>%
+  tidyr::pivot_wider(names_from = metric,
+                     values_from = value) %>%
+  mutate(strategy = recode(strategy,
+                           "True" = "True",
+                           "Est1" = "Full_Data",
+                           "Est2" = "Training_Set",
+                           "Est3" = "Test_Set",
+                           "Est4" = "Nuisance_Set")) %>%
+  mutate(strategy = factor(strategy, 
+                           levels = c("True","Full_Data", 
+                                      "Training_Set", "Test_Set", 
+                                      "Nuisance_Set")))
+```
+
+
+```{r plot averages}
+# illustrate average Brier scores across increasing sample size
+mean_briers0_gam <- ggplot(data = summary_A0, 
+       mapping = aes(x = as.factor(sample_size),
+                     y = mean_brier, 
+                     color = strategy, 
+                     shape = strategy, 
+                     linetype = strategy, 
+                     group = strategy)) +
+  
+  geom_point(size = 3) +
+  geom_line(linewidth = 0.8) +
+  
+  scale_x_discrete(breaks = c(500, 1e3, 1e4, 1e5)) +
+
+  # geom_errorbar(aes(ymin = mean_brier - sd_brier,
+                #     ymax = mean_brier + sd_brier), 
+                # width= 0.1) +
+  
+  scale_color_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED")) + 
+
+  
+  scale_shape_manual(values = c("True" = 8,
+                                "Full_Data" = 15,
+                                "Training_Set" = 16,
+                                "Test_Set" = 17,
+                                "Nuisance_Set" = 18)) +
+
+  scale_linetype_manual(values = c( "True" = "solid",
+                                    "Full_Data" = "dashed",
+                                   "Training_Set" = "dotted",
+                                   "Test_Set" = "dotdash",
+                                   "Nuisance_Set" = "longdash")) +
+  
+  guides(color = guide_legend("Strategy"), shape = guide_legend("Strategy"), linetype = "none") +
+  
+  scale_y_continuous(limits = c(0.17, 0.4)) +
+
+
+  labs(x = "Sample Size", y = "Mean Brier Score") +
+       #title = "Average Brier Score (A=0)") 
+  
+  theme_minimal()
+
+# ggsave("mean_briers0_gam.png", plot = mean_briers0_gam)
+
+
+```
+
+### Overall Performance Measures
+Here we compute the bias, variance and RMSE related to the Brier score estimates.
+```{r performance measures}
+# extract the true values per sample size
+true_values <- summary_A0 %>% filter(strategy == "True") %>%
+  dplyr::select(sample_size, true_brier = mean_brier)
+
+# join true values to all rows
+# compute bias, variance, and RMSE
+sum_all_A0 <- summary_A0 %>%
+  left_join(true_values, by = "sample_size") %>%
+  filter(strategy != "True") %>%
+  mutate(bias = mean_brier - true_brier,
+         variance = sd_brier^2,
+         rmse = sqrt(bias^2 + variance)) %>%
+  mutate(strategy = factor(strategy, 
+                           levels = c("Full_Data", "Training_Set", 
+                                      "Test_Set", "Nuisance_Set")))
+
+# select relevant columns
+table_GAM_A0 <- sum_all_A0 %>%
+  select(sample_size, strategy, bias, variance, rmse)
+
+
+# plots for bias, variance, and RMSE
+
+# ggplot(data = sum_all_A0,
+#        aes(x = as.factor(sample_size),
+#            y = bias,
+#            color = strategy,
+#            shape = strategy,
+#            linetype = strategy,
+#            group = strategy)) +
+# 
+#   geom_point(size = 3) +
+#   geom_line(linewidth = 0.8) +
+#   scale_y_continuous(limits = c(-0.0001, 0.05))
+# 
+# 
+# ggplot(data = sum_all_A0,
+#        aes(x = as.factor(sample_size),
+#            y = variance,
+#            color = strategy,
+#            shape = strategy,
+#            linetype = strategy,
+#            group = strategy)) +
+# 
+#   geom_point(size = 3) +
+#   geom_line(linewidth = 0.8) +
+#   scale_y_continuous(limits = c(-0.0001, 0.0005))
+# 
+# ggplot(data = sum_all_A0,
+#        aes(x = as.factor(sample_size),
+#            y = rmse,
+#            color = strategy,
+#            shape = strategy,
+#            linetype = strategy,
+#            group = strategy)) +
+# 
+#   geom_point(size = 3) +
+#   geom_line(linewidth = 0.8) +
+#   scale_y_continuous(limits = c(-0.0001, 0.05))
+
+```
+
+
+
+## Treated Group
+Performing same as above, but with the treatment group (a=1).
+### Distribution of Brier scores
+```{r}
+# transform into long format 
+long_df1_gam <- combined_results_gam %>%
+  dplyr::select(replication, sample_size, True_A1, Est1_A1, Est2_A1, Est3_A1, Est4_A1) %>%
+  tidyr::pivot_longer(cols = starts_with("True_A1"):starts_with("Est4_A1"), 
+               names_to = "strategy", values_to = "brier_score")
+
+long_df1_gam <- long_df1_gam %>% mutate(strategy = recode(strategy,
+                           "True_A1" = "True",
+                           "Est1_A1" = "Full_Data",
+                           "Est2_A1" = "Training_Set",
+                           "Est3_A1" = "Test_Set",
+                           "Est4_A1" = "Nuisance_Set")) %>%
+            mutate(strategy = factor(strategy, 
+                           levels = c("True","Full_Data", 
+                                      "Training_Set", "Test_Set", 
+                                      "Nuisance_Set")))
+
+#-------------------------------------------------------------------------------
+
+# Boxplot: distribution of average estimates from 100 replications
+boxplot1_gam <- ggplot(long_df1_gam, 
+                      aes(x = strategy, y = brier_score, 
+                          fill = strategy, color = strategy)) +
+  
+  geom_jitter(alpha = 0.5) +
+  geom_boxplot(alpha = 0.7, color = "black") +
+  
+  labs(# title = "Distribution of Brier Scores (A=1)",
+       # subtitle = "Logistic Regression Nuisance Model", 
+       # caption = "Average estimates from 1000 replications",
+       y = "Average Brier Score", x = "") +
+  
+  scale_color_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED"), 
+                     name = "Strategy") +
+  
+  scale_fill_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED"), 
+                    name = "Strategy") +
+
+  theme_minimal() +
+  
+  theme(axis.text.x = element_blank()) +
+  
+  facet_wrap(~sample_size) +
+  
+  scale_y_continuous(limits = c(0.16, 0.26)) 
+
+
+# ggsave("boxplot1_gam.png", plot = boxplot1_gam)
+```
+
+
+### Average Scores
+```{r}
+results_A1 <- combined_results_gam %>% dplyr::select(replication, sample_size, 
+                                 True_A1, Est1_A1, Est2_A1, Est3_A1, Est4_A1)
+
+summary_stats_A1 <- results_A1 %>%
+  group_by(sample_size) %>%
+  summarise(across(.cols = c(True_A1, Est1_A1, Est2_A1, Est3_A1, Est4_A1),
+                   .fns = list(mean_brier = mean, sd_brier = sd),
+                   .names = "{.col}_{.fn}"))
+
+summary_A1 <- summary_stats_A1 %>%
+  tidyr::pivot_longer(
+    cols = -sample_size, 
+    names_to = c("strategy", "metric"), 
+    names_sep = "_A1_") %>%
+  tidyr::pivot_wider(names_from = metric,
+                     values_from = value) %>%
+  mutate(strategy = recode(strategy,
+                           "True" = "True",
+                           "Est1" = "Full_Data",
+                           "Est2" = "Training_Set",
+                           "Est3" = "Test_Set",
+                           "Est4" = "Nuisance_Set")) %>%
+  mutate(strategy = factor(strategy, 
+                           levels = c("True","Full_Data", 
+                                      "Training_Set", "Test_Set", 
+                                      "Nuisance_Set")))
+```
+
+
+```{r}
+mean_briers1_gam <- ggplot(data = summary_A1, 
+       mapping = aes(x = as.factor(sample_size),
+                     y = mean_brier, 
+                     color = strategy, 
+                     shape = strategy, 
+                     linetype = strategy, 
+                     group = strategy)) +
+  
+  geom_point(size = 3) +
+  geom_line(linewidth = 0.8) +
+  
+  scale_x_discrete(breaks = c(500, 1e3, 1e4, 1e5)) +
+
+  # geom_errorbar(aes(ymin = mean_brier - sd_brier,
+                #     ymax = mean_brier + sd_brier), 
+                # width= 0.1) +
+  
+  scale_color_manual(values = c("True" = "#F8766D",
+                                "Full_Data" = "#CD9600", 
+                                "Training_Set" = "#00C19A", 
+                                "Test_Set" = "#00A9FF",
+                                "Nuisance_Set" = "#ED68ED")) + 
+
+  
+  scale_shape_manual(values = c("True" = 8,
+                                "Full_Data" = 15,
+                                "Training_Set" = 16,
+                                "Test_Set" = 17,
+                                "Nuisance_Set" = 18)) +
+
+  scale_linetype_manual(values = c( "True" = "solid",
+                                    "Full_Data" = "dashed",
+                                   "Training_Set" = "dotted",
+                                   "Test_Set" = "dotdash",
+                                   "Nuisance_Set" = "longdash")) +
+  
+  guides(color = guide_legend("Strategy"), shape = guide_legend("Strategy"), linetype = "none") +
+  
+
+  labs(x = "Sample Size", y = "Mean Brier Score") + 
+       # title = "Average Brier Score (A=1)") +
+  
+  scale_y_continuous(limits = c(0.17, 0.20)) +
+  
+  theme_minimal()
+
+
+# ggsave("mean_briers1_gam.png", plot = mean_briers1_gam)
+
+```
+
+
+### Overall Performance Measures
+#### Bias, Variance, RMSE
+```{r}
+# extract the true values per sample size
+true_values <- summary_A1 %>% filter(strategy == "True") %>%
+  dplyr::select(sample_size, true_brier = mean_brier)
+
+# join true values to all rows
+sum_all_A1 <- summary_A1 %>%
+  left_join(true_values, by = "sample_size") %>%
+  filter(strategy != "True") %>%
+  mutate(bias = mean_brier - true_brier,
+         variance = sd_brier^2,
+         rmse = sqrt(bias^2 + variance)) %>%
+  mutate(strategy = factor(strategy, 
+                           levels = c("Full_Data", "Training_Set", 
+                                      "Test_Set", "Nuisance_Set")))
+
+# select relevant columns
+table_GAM_A1 <- sum_all_A1 %>%
+  select(sample_size, strategy, bias, variance, rmse)
+```
+
+
