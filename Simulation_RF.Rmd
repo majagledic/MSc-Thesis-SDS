@@ -6,10 +6,10 @@ output: pdf_document
 ---
 
 
-This is the code for performing the cross-validation where the nuisance-models 
+This is the code for performing cross-validation where the nuisance models 
 are defined as a random forest (RF) propensity score model.
-All steps remain the same as the baseline model, only difference is '
-the type of nuisance used. 
+All steps remain the same as the baseline model (logistic regression), only difference is '
+the type of nuisance model used. 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
