@@ -1,12 +1,12 @@
 ---
-title: "Simulation5.1_LR"
+title: "Simulation_LR"
 author: "Maja Gledić"
 date: "2025-06-28"
 output: pdf_document
 ---
 
-This is the code for performing cross-validation where the nuisance-models 
-are defined as a logistic regression propensity score model.
+This is the code for performing cross-validation where the nuisance models 
+are defined as a logistic regression propensity score model (baseline models).
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
